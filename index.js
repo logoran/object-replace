@@ -6,7 +6,7 @@
 
 const clone = require('@logoran/clone-deep');
 const isPlainObject = require('is-plain-object');
-const debug = require('debug')('object-template');
+const debug = require('debug')('object-templates');
 
 function match(value) {
   return value.search(/\$\{.*?\}/) !== -1;
@@ -25,7 +25,7 @@ function regSymbolEncode(value) {
   return value.replace(/([\[\'\]])/g, '\\$1');
 }
 
-function objectReplace(template, constants = {}, options) {
+function objectTemplates(template, constants = {}, options) {
   // strict mode use independent scope, can't set var
   // for (let key in constants) {
   //   eval(`var ${key} = ${constants[key]};`);
@@ -207,7 +207,7 @@ function objectReplace(template, constants = {}, options) {
 }
 
 /**
- * Expose `objectReplace`
+ * Expose `objectTemplates`
  */
 
-module.exports = objectReplace;
+module.exports = objectTemplates;
