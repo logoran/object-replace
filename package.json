@@ -1,12 +1,12 @@
 {
-  "name": "object-replace",
-  "description": "Object replace like template",
+  "name": "object-template",
+  "description": "Object template like string template but for object",
   "version": "1.0.0",
-  "homepage": "https://github.com/logoran/object-replace",
+  "homepage": "https://github.com/logoran/object-template",
   "author": "Leo Long (https://github.com/yujunlong2000)",
-  "repository": "logoran/object-replace",
+  "repository": "logoran/object-template",
   "bugs": {
-    "url": "https://github.com/logoran/object-replace/issues"
+    "url": "https://github.com/logoran/object-template/issues"
   },
   "license": "MIT",
   "files": [
@@ -34,16 +34,16 @@
     "assign",
     "template",
     "config",
-    "replace-array",
-    "replace-array-deep",
-    "replace-buffer",
-    "replace-date",
-    "replace-deep",
-    "replace-object",
-    "replace-object-deep",
-    "replace-reg-exp",
-    "replace-regex",
-    "replace-regexp",
+    "template-array",
+    "template-array-deep",
+    "template-buffer",
+    "template-date",
+    "template-deep",
+    "template-object",
+    "template-object-deep",
+    "template-reg-exp",
+    "template-regex",
+    "template-regexp",
     "deep",
     "extend",
     "object",
@@ -63,7 +63,7 @@
       "list": [
         "is-plain-object",
         "clone-deep"
-      ]
+      ] 
     },
     "lint": {
       "reflinks": true

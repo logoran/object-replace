@@ -6,7 +6,7 @@
 
 const clone = require('@logoran/clone-deep');
 const isPlainObject = require('is-plain-object');
-const debug = require('debug')('object-replace');
+const debug = require('debug')('object-template');
 
 function match(value) {
   return value.search(/\$\{.*?\}/) !== -1;
