@@ -22,16 +22,13 @@ function getItemName(value) {
 }
 
 function regSymbolEncode(value) {
-  return value.replace(/([\[\'\]])/g, '\\$1');
+  return value.replace(/([\[\'\]\(\)])/g, '\\$1');
 }
 
-function objectTemplates(template, constants = {}, options) {
-  // strict mode use independent scope, can't set var
-  // for (let key in constants) {
-  //   eval(`var ${key} = ${constants[key]};`);
-  // }
-
+function objectTemplates(template, options) {
+  const constants = options.constants || {};
   const _arguments = options._arguments || [];
+  const helpers = options.helpers || {};
   const cloneInstances = options.cloneInstances || [];
   const alias = options.alias || [];
   const allowUndefined = options.allowUndefined;
@@ -56,6 +53,9 @@ function objectTemplates(template, constants = {}, options) {
     let alias = [];
     for (let key in constants) {
       alias.push([key, `constants.${key}`]);
+    }
+    for (let key in helpers) {
+      alias.push([`${key}\\s*?(`, `helpers.${key}(`]);
     }
     return alias;
   }
@@ -181,9 +181,10 @@ function objectTemplates(template, constants = {}, options) {
     }
     template += replaceString(template);
     if ('' !== statement) {
-      statement = `const constants = this.constants;\n` + statement;
+      statement = `const constants = this.constants;
+        const helpers = this.helpers;\n` + statement;
       debug('return function (%s) {%s}', _arguments.join(','), statement);
-      return new Function(..._arguments, statement).bind({constants});
+      return new Function(..._arguments, statement).bind({constants, helpers});
     } else {
       debug('return value %o', template);
       return function() {return template;};
@@ -196,9 +197,10 @@ function objectTemplates(template, constants = {}, options) {
         'let result = this.clone(this.data);\n')
         + statement
         + 'return result;';
-      statement = `const constants = this.constants;\n` + statement;
+      statement = `const constants = this.constants;
+        const helpers = this.helpers;\n` + statement;
       debug('return function (%s) {%s}', _arguments.join(','), statement);
-      return new Function(..._arguments, statement).bind({data: template, clone, instanceClone, constants});
+      return new Function(..._arguments, statement).bind({data: template, clone, instanceClone, constants, helpers});
     } else {
       debug('return value %o', template);
       return function() {return template;};
