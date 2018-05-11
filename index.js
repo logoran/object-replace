@@ -45,7 +45,7 @@ function objectTemplates(template, options) {
       }
       return res;
     } else {
-      return value;
+      return clone(value);
     }
   }
 
