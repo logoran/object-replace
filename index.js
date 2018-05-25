@@ -13,12 +13,25 @@ function match(value) {
 }
 
 function getItemName(value) {
-  const itemname = value.match(/[\w-]+?$/);
-  if (itemname) {
-    return itemname;
+  if (typeof value === 'string') {
+    const itemname = value.match(/[\w-]+?$/);
+    if (itemname) {
+      return [value, itemname, 'seq'];
+    }
+    itemname = value.match(/\[\'[\w-]+?\'\]$/);
+    return [value, itemname.substr(2, itemname.length - 4), 'seq'];
+  } else {
+    let stab, item, seq = 'seq';
+    for (let key in value) {
+      if (key !== '__seq') {
+        item = key;
+        stab = value[key];
+      } else {
+        seq = value[key];
+      }
+    }
+    return [stab, item, seq];
   }
-  itemname = value.match(/\[\'[\w-]+?\'\]$/);
-  return itemname.substr(2, itemname.length - 4);
 }
 
 function regSymbolEncode(value) {
@@ -26,11 +39,17 @@ function regSymbolEncode(value) {
 }
 
 function objectTemplates(template, options) {
+  // the constants during all the compile and replace operating time.
   const constants = options.constants || {};
+  // the argument for replace.
   const _arguments = options._arguments || [];
+  // helper functions in replace.
   const helpers = options.helpers || {};
+  // object type will be cloned which is not plain object.
   const cloneInstances = options.cloneInstances || [];
+  // alias for replace.
   const alias = options.alias || [];
+  // if allow undefined in object after replace result.
   const allowUndefined = options.allowUndefined;
   let statement = '';
 
@@ -100,52 +119,51 @@ function objectTemplates(template, options) {
   function replaceObject(data, path = '', innerAlias = getConstAlias()) {
     for (let key in data) {
       let value = data[key];
-      if (key.search(/\$array.*?/) !== -1 && value['__stub'] && typeof value['__stub'] === 'string'
+      if (key.search(/\$array.*?/) !== -1 && value['__stub'] && (typeof value['__stub'] === 'string' || value['__stub'] instanceof Array)
         && value['__value']) {
         let name = key.substring(6);
         if (value['__name'] && typeof value['__name'] === 'string') {
           name = value['__name'];
         }
-        const itemname = getItemName(value['__stub']);
+        const stabs = (typeof value['__stub'] === 'string') ? [value['__stub']] : value['__stub'];
+        const __alias = [];
+        let endsm = '';
+        statement += 
+          `delete result${path}['${key}'];
+          {
+            let items = result${path}['${name}'] = [];`;
+        for (let i in stabs) {
+          const stab = stabs[i];
+          const [stabname, itemname, seq] = getItemName(stab);
+          statement += `
+            let src_${i} = ${stabname};
+            for (let ${itemname}_seq in src_${i}) {
+              let ${itemname} = src_${i}[${itemname}_seq];`;
+          __alias.push([`${itemname}.${seq}`, `${itemname}_seq`], [`${itemname}['${seq}']`, `${itemname}_seq`]);
+          endsm += '}';
+        }
         if (value['__value'] instanceof Array || typeof value['__value'] === 'object') {
-          statement += 
-            `delete result${path}['${key}'];
-            {
-              let items = result${path}['${name}'] = [];
-              let src = ${value['__stub']};
-              for (let ${itemname}_seq in src) {
-                let result = this.clone(this.data${path}['${key}']['__value']);
-                let ${itemname} = src[${itemname}_seq];\n`
-          replaceObject(value['__value'], '', innerAlias.concat([[`${itemname}.__seq`, `${itemname}_seq`], [`${itemname}['__seq']`, `${itemname}_seq`]]));
-          statement += 
-                `items.push(result);
-              }
-            }\n`
+          statement += `
+                let result = this.clone(this.data${path}['${key}']['__value']);\n`
+          replaceObject(value['__value'], '', innerAlias.concat(__alias));
         } else if ('string' === typeof value['__value']) {
-          statement +=
-            `delete result${path}['${key}'];
-            {
-              let items = result${path}['${name}'] = [];
-              let src = ${value['__stub']};
-              for (let ${itemname}_seq in src) {
-                let result;\n`
           if (match(value['__value'])) {
-            const [ok, _statement] = getStatement(value['__value'], '', [], innerAlias.concat([[`${itemname}.__seq`, `${itemname}_seq`], [`${itemname}['__seq']`, `${itemname}_seq`]]));
+            const [ok, _statement] = getStatement(value['__value'], '', [], innerAlias.concat(__alias));
             if (ok) {
-              statement += `let ${itemname} = src[${itemname}_seq];
+              statement += `let result;
                 ${_statement}`;
             } else {
               value['__value'] = _statement;
-              statement += `result = this.data${path}['${key}']['__value'];\n`;
+              statement += `let result = this.data${path}['${key}']['__value'];\n`;
             }
           } else {
-            statement += `result = this.data${path}['${key}']['__value'];\n`;
+            statement += `let result = this.data${path}['${key}']['__value'];\n`;
           }
-          statement += 
-                `items.push(result);
-              }
-            }\n`
         }
+        statement += 
+              `items.push(result);
+            ${endsm}
+          }\n`
       } else if (value instanceof Array || isPlainObject(value) || cloneInstances.includes(value.constructor)) {
         replaceObject(value, `${path}['${key}']`, innerAlias);
       } else if ('string' === typeof value && match(value)) {
