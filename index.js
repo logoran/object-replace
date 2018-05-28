@@ -290,12 +290,20 @@ function objectTemplates(template, options) {
           statement += `
                 __ot_items.push(__ot_result);
               ${endsm}`;
+          if (value.count) {
+            statement += `
+              const __ot_count = __ot_items.length`;
+            __alias.length = 0;
+            __alias.push([`${name}.${value.count}`, '__ot_count'], [`${name}['${value.count}']`, '__ot_count']);
+          } else {
+            __alias.length = 0;
+          }
           if (value.append) {
             if (value.append instanceof Array) {
               statement += `
                 {
                   const __ot_result = __ot_append;`;
-              replaceObject(value.append, innerAlias);
+              replaceObject(value.append, innerAlias.concat(__alias));
               statement += `
                   __ot_items.push(...__ot_result);
                 }`;
@@ -308,7 +316,7 @@ function objectTemplates(template, options) {
                   __ot_items.push(__ot_result);
                 }`;
             } else if ('string' === typeof value.append && match(value.append)) {
-              const [_ok, __statement] = getStatement(value.append, '', false, innerAlias);
+              const [_ok, __statement] = getStatement(value.append, '', false, innerAlias.concat(__alias));
               if (_ok) {
                 statement += `
                   __ot_items.push(${__statement});`;
@@ -327,10 +335,10 @@ function objectTemplates(template, options) {
           if (value.fixed) {
             if (value.fixed instanceof Array) {
               for (let i in value.fixed) {
-                replaceFixed(value.fixed[i], innerAlias, `[${i}]`);
+                replaceFixed(value.fixed[i], innerAlias.concat(__alias), `[${i}]`);
               }
             } else {
-              replaceFixed(value.fixed, innerAlias);
+              replaceFixed(value.fixed, innerAlias.concat(__alias));
             }
           }
           statement += `
