@@ -1,7 +1,7 @@
 {
   "name": "object-templates",
   "description": "Object templates like string templates but for object",
-  "version": "1.0.5",
+  "version": "1.0.6",
   "homepage": "https://github.com/logoran/object-templates",
   "author": "Leo Long (https://github.com/yujunlong2000)",
   "repository": "logoran/object-templates",

@@ -34,7 +34,7 @@ function reverseEscape(value, matched) {
 
 function getItemName(value) {
   if (typeof value === 'string') {
-    const itemname = value.match(/[\w-]+?$/);
+    let itemname = value.match(/[\w-]+?$/);
     if (itemname) {
       return [value, itemname, 'seq'];
     }
@@ -91,7 +91,21 @@ function goodExpansion(value) {
     return true;
   }
   if (!(stub instanceof Array)) {
-    return false;
+    for (let key in stub) {
+      let one = stub[key].stub;
+      if (typeof one === 'string') {
+        continue;
+      }
+      if (!(one instanceof Array)) {
+        return false;
+      }
+      for (let s of one) {
+        if (typeof s !== 'string' && (!s.name || typeof s.name !== 'string' || !s.item || typeof s.item !== 'string')) {
+          return false;
+        }
+      }
+    }
+    return true;
   }
   for (let s of stub) {
     if (typeof s !== 'string' && (!s.name || typeof s.name !== 'string' || !s.item || typeof s.item !== 'string')) {
@@ -176,6 +190,8 @@ function objectTemplates(template, options) {
         statement = 
           `if ((${value}) !== undefined) {
             __ot_result${path} = (${value});
+          } else {
+            delete __ot_result${path};
           }`;
       }
       debug('value %s get statement %s', value, statement);
@@ -210,6 +226,106 @@ function objectTemplates(template, options) {
     }
   }
 
+  function hasCountExpand(data) {
+    if (data.count) {
+      return true;
+    }
+    let stubs = data.stub;
+    if (typeof stubs !== 'object') {
+      return false;
+    }
+    for (let key in stubs) {
+      if (stubs[key].count) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  function expandArray(data, name, innerAlias, countAlias, path = '') {
+    const __alias = [];
+    let endsm = '';
+    const stubs = (typeof data.stub === 'string') ? [data.stub] : data.stub;
+    if (path === '') {
+      statement += `
+          const __ot_data = __ot_temp.value;`;
+    } else {
+      statement += `
+          __ot_data = __ot_stub['${regSymbolEncode(path)}'].value;`;
+    }
+    if (data.count) {
+      statement += `
+        __ot_count = 0;`;
+    }
+    for (let i in stubs) {
+      const stub = stubs[i];
+      const [stubname, itemname, seq] = getItemName(stub);
+      statement += `
+        const __ot_src_${path}${i} = ${stubname};
+        for (let __ot_${itemname}_seq in __ot_src_${path}${i}) {
+          let ${itemname} = __ot_src_${path}${i}[__ot_${itemname}_seq];`;
+      __alias.push([`${itemname}.${seq}`, `__ot_${itemname}_seq`], [`${itemname}['${seq}']`, `__ot_${itemname}_seq`]);
+      endsm += '}';
+    }
+    if (data.value instanceof Array || typeof data.value === 'object') {
+      statement += `
+            const __ot_result = this.clone(__ot_data);`
+      replaceObject(data.value, innerAlias.concat(__alias));
+    } else if ('string' === typeof data.value && match(data.value)) {
+      const [ok, _statement] = getStatement(data.value, '', [], innerAlias.concat(__alias));
+      if (ok) {
+        statement += `let __ot_result;
+          ${_statement}`;
+      } else {
+        value['value'] = _statement;
+        statement += `const __ot_result = __ot_data;`;
+      }
+    } else {
+      statement += `const __ot_result = __ot_data`;
+    }
+    statement += `
+          __ot_items.push(__ot_result);`
+    if (data.count) {
+      statement += `
+        __ot_count++;`;
+    }
+    statement += `
+        ${endsm}`;
+    if (data.count) {
+      if (path === '') {
+        statement += `
+          const __ot_${name}count = __ot_count`;
+        countAlias.push([`${name}.${data.count}`, `__ot_${name}count`], [`${name}['${data.count}']`, `__ot_${name}count`]);
+      } else {
+        statement += `
+          const __ot_${path}count = __ot_count`;
+        countAlias.push([`${path}.${data.count}`, `__ot_${path}count`], [`${path}['${data.count}']`, `__ot_${path}count`]);
+      }
+    }
+  }
+
+  function expandObject(data, name, innerAlias, countAlias, path = '') {
+    const __alias = [];
+    let endsm = '';
+    const stubs = (typeof data.stub === 'string') ? [data.stub] : data.stub;
+    for (let i in stubs) {
+      const stub = stubs[i];
+      const [stubname, itemname, key] = getKeyName(stub);
+      statement += `
+        let __ot_src_${path}${i} = ${stubname};
+        for (let __ot_${itemname}_key in __ot_src_${path}${i}) {
+          let ${itemname} = __ot_src_${path}${i}[__ot_${itemname}_key];`;
+      __alias.push([`${itemname}.${key}`, `__ot_${itemname}_key`], [`${itemname}['${key}']`, `__ot_${itemname}_key`]);
+      endsm += '}';
+    }
+    if ('object' !== typeof data.value || data.value instanceof Array) {
+      throw 'Object expansion must expand to object';
+    }
+    replaceObject(data.value, innerAlias.concat(__alias));
+    statement += `
+        ${endsm}`;
+  }
+
   function replaceObject(data, innerAlias = getConstAlias()) {
     const isArray = data instanceof Array;
     for (let key in data) {
@@ -229,12 +345,13 @@ function objectTemplates(template, options) {
           }
         }
         isExpan = isExpansion(value);
-        nameTag = `'${name}'`;
+        nameTag = `'${regSymbolEncode(name)}'`;
       }
       if (isExpan) {
         if (!goodExpansion(value)) {
           throw 'Expansion error';
         }
+        const countAlias = [];
         const stubs = (typeof value['stub'] === 'string') ? [value['stub']] : value['stub'];
         const __alias = [];
         let endsm = '';
@@ -242,8 +359,17 @@ function objectTemplates(template, options) {
           statement += `
             __ot_temp = __ot_result[${nameTag}];
             delete __ot_result[${nameTag}];
-            {
-              const __ot_data = __ot_temp.value;`;
+            {`;
+          if (hasCountExpand(value)) {
+            statement += `
+              let __ot_count;`;
+          }
+          const stub = value.stub;
+          if (typeof stub === 'object' && !(stub instanceof Array)) {
+            statement += `
+              const __ot_stub = __ot_temp.stub
+              let __ot_data;`;
+          }
           if (value.append) {
             statement += `
               const __ot_append = __ot_temp.append;`;
@@ -259,51 +385,19 @@ function objectTemplates(template, options) {
             statement += `
               let __ot_items = __ot_result[${nameTag}] = [];`;
           }
-          for (let i in stubs) {
-            const stub = stubs[i];
-            const [stubname, itemname, seq] = getItemName(stub);
-            statement += `
-              let __ot_src_${i} = ${stubname};
-              for (let __ot_${itemname}_seq in __ot_src_${i}) {
-                let ${itemname} = __ot_src_${i}[__ot_${itemname}_seq];`;
-            __alias.push([`${itemname}.${seq}`, `__ot_${itemname}_seq`], [`${itemname}['${seq}']`, `__ot_${itemname}_seq`]);
-            endsm += '}';
-          }
-          if (value['value'] instanceof Array || typeof value['value'] === 'object') {
-            statement += `
-                  const __ot_result = this.clone(__ot_data);`
-            replaceObject(value['value'], innerAlias.concat(__alias));
-          } else if ('string' === typeof value['value']) {
-            if (match(value['value'])) {
-              const [ok, _statement] = getStatement(value['value'], '', [], innerAlias.concat(__alias));
-              if (ok) {
-                statement += `let __ot_result;
-                  ${_statement}`;
-              } else {
-                value['value'] = _statement;
-                statement += `const __ot_result = __ot_data;`;
-              }
-            } else {
-              statement += `const __ot_result = __ot_data`;
+          if (typeof stub === 'object' && !(stub instanceof Array)) {
+            for (let key in stub) {
+              expandArray(stub[key], name, innerAlias, countAlias, key);
             }
-          }
-          statement += `
-                __ot_items.push(__ot_result);
-              ${endsm}`;
-          if (value.count) {
-            statement += `
-              const __ot_count = __ot_items.length`;
-            __alias.length = 0;
-            __alias.push([`${name}.${value.count}`, '__ot_count'], [`${name}['${value.count}']`, '__ot_count']);
           } else {
-            __alias.length = 0;
+            expandArray(value, name, innerAlias, countAlias, '');
           }
           if (value.append) {
             if (value.append instanceof Array) {
               statement += `
                 {
                   const __ot_result = __ot_append;`;
-              replaceObject(value.append, innerAlias.concat(__alias));
+              replaceObject(value.append, innerAlias.concat(countAlias));
               statement += `
                   __ot_items.push(...__ot_result);
                 }`;
@@ -311,12 +405,12 @@ function objectTemplates(template, options) {
               statement += `
                 {
                   const __ot_result = __ot_append;`;
-              replaceObject(value.append, innerAlias);
+              replaceObject(value.append, innerAlias.concat(countAlias));
               statement += `
                   __ot_items.push(__ot_result);
                 }`;
             } else if ('string' === typeof value.append && match(value.append)) {
-              const [_ok, __statement] = getStatement(value.append, '', false, innerAlias.concat(__alias));
+              const [_ok, __statement] = getStatement(value.append, '', false, innerAlias.concat(countAlias));
               if (_ok) {
                 statement += `
                   __ot_items.push(${__statement});`;
@@ -335,10 +429,10 @@ function objectTemplates(template, options) {
           if (value.fixed) {
             if (value.fixed instanceof Array) {
               for (let i in value.fixed) {
-                replaceFixed(value.fixed[i], innerAlias.concat(__alias), `[${i}]`);
+                replaceFixed(value.fixed[i], innerAlias.concat(countAlias), `[${i}]`);
               }
             } else {
-              replaceFixed(value.fixed, innerAlias.concat(__alias));
+              replaceFixed(value.fixed, innerAlias.concat(countAlias));
             }
           }
           statement += `
@@ -357,30 +451,20 @@ function objectTemplates(template, options) {
               {
                 const __ot_result = {};`
           }
-          for (let i in stubs) {
-            const stub = stubs[i];
-            const [stubname, itemname, key] = getKeyName(stub);
-            statement += `
-              let __ot_src_${i} = ${stubname};
-              for (let __ot_${itemname}_key in __ot_src_${i}) {
-                let ${itemname} = __ot_src_${i}[__ot_${itemname}_key];`;
-            __alias.push([`${itemname}.${key}`, `__ot_${itemname}_key`], [`${itemname}['${key}']`, `__ot_${itemname}_key`]);
-            endsm += '}';
+          const stub = value.stub;
+          if (typeof stub === 'object' && !(stub instanceof Array)) {
+            for (let key in stub) {
+              expandObject(stub[key], name, innerAlias, countAlias, key);
+            }
+          } else {
+            expandObject(value, name, innerAlias, countAlias, '');
           }
-          if ('object' !== typeof value['value'] || value['value'] instanceof Array) {
-            throw 'Object expansion must expand to object';
-          }
-          replaceObject(value['value'], innerAlias.concat(__alias));
-          statement += `
-              ${endsm}`;
           if (value.append) {
             if ('object' !== typeof value.append || value.append instanceof Array) {
               throw 'Object expansion must expand to object';
             }
-            console.log('append =', value.append);
             statement += `
-              Object.assign(__ot_result, __ot_append);
-              console.log('__ot_append =', __ot_append);`;
+              Object.assign(__ot_result, __ot_append);`;
             replaceObject(value.append, innerAlias);
           }
           statement += `
@@ -443,7 +527,6 @@ function objectTemplates(template, options) {
           __ot_result[${_statement}] = __ot_temp;`;
       }
       if (name !== key) {
-        console.log('come here');
         data[name] = data[key];
         delete data[key];
       }
@@ -499,6 +582,8 @@ function objectTemplates(template, options) {
     }
   }
 }
+
+objectTemplates.escape = escape;
 
 /**
  * Expose `objectTemplates`
