@@ -8,8 +8,28 @@ const clone = require('@logoran/clone-deep');
 const isPlainObject = require('is-plain-object');
 const debug = require('debug')('object-templates');
 
+// Argument name can't begin with '__ot_', because it maybe conflict which inner object name.
+// Expansion object must have type and stub property. If a normal object has that two property, it should set isSimple = true.
+// IF normal object has type stub and isSimple, the original isSimple change to '$', and other property name '$$$$' to '$''$$$$'.
+// IF key name match the ${**} format, and don't want to replace, set '#' behand the key.
+// IF key name match the ${**} format, and begin with '#' or '@', should add '@' behand the key.
+
 function match(value) {
-  return value.search(/\$\{.*?\}/) !== -1;
+  return value.search(/\$\{.*?\}/) !== -1 && value[0] != '#';
+}
+
+function escape(value, matched) {
+  if (matched) {
+    return (value[0] === '#' || value[0] === '@') ? `@${value}` : value;
+  }
+  return `#${value}`;
+}
+
+function reverseEscape(value, matched) {
+  if (matched) {
+    return value[0] === '@' ? value.substr(1) : value;
+  }
+  return value.search(/\$\{.*?\}/) !== -1 ? value.substr(1) : value;
 }
 
 function getItemName(value) {
@@ -21,17 +41,64 @@ function getItemName(value) {
     itemname = value.match(/\[\'[\w-]+?\'\]$/);
     return [value, itemname.substr(2, itemname.length - 4), 'seq'];
   } else {
-    let stab, item, seq = 'seq';
-    for (let key in value) {
-      if (key !== '__seq') {
-        item = key;
-        stab = value[key];
-      } else {
-        seq = value[key];
-      }
-    }
-    return [stab, item, seq];
+    return [value.name, value.item, value.seq || 'seq'];
   }
+}
+
+function getKeyName(value) {
+  if (typeof value === 'string') {
+    const itemname = value.match(/[\w-]+?$/);
+    if (itemname) {
+      return [value, itemname, 'key'];
+    }
+    itemname = value.match(/\[\'[\w-]+?\'\]$/);
+    return [value, itemname.substr(2, itemname.length - 4), 'key'];
+  } else {
+    return [value.name, value.item, value.key || 'key'];
+  }
+}
+
+function isExpansion(value) {
+  if (value.type && value.stub) {
+    if (!value.isSimple) {
+      return true;
+    } else {
+      delete value.isSimple;
+      if (value['$'] !== undefined) {
+        value.isSimple = value['$'];
+        delete value['$'];
+      }
+      const __new = {};
+      for (let k in value) {
+        if (k.split('$').length === k.length + 1) {
+          __new[k.substr(1)] = value[k];
+          delete value[k]; 
+        }
+      }
+      Object.assign(value, __new);
+    }
+    return false;
+  }
+}
+
+function goodExpansion(value) {
+  const stub = value.stub;
+  const type = value.type;
+  if (type !== 'object' && type !== 'array') {
+    return false;
+  }
+  if (typeof stub === 'string') {
+    return true;
+  }
+  if (!(stub instanceof Array)) {
+    return false;
+  }
+  for (let s of stub) {
+    if (typeof s !== 'string' && (!s.name || typeof s.name !== 'string' || !s.item || typeof s.item !== 'string')) {
+      return false;
+    }
+  }
+  return true;
 }
 
 function regSymbolEncode(value) {
@@ -71,10 +138,10 @@ function objectTemplates(template, options) {
   function getConstAlias() {
     let alias = [];
     for (let key in constants) {
-      alias.push([key, `constants.${key}`]);
+      alias.push([key, `__ot_constants.${key}`]);
     }
     for (let key in helpers) {
-      alias.push([`${key}\\s*?(`, `helpers.${key}(`]);
+      alias.push([`${key}\\s*?(`, `__ot_helpers.${key}(`]);
     }
     return alias;
   }
@@ -100,88 +167,284 @@ function objectTemplates(template, options) {
       return [false, statement];
     } catch (e) {
       if (data === undefined) {
-        statement = `return (${value});\n`;
+        statement = `return (${value});`;
+      } else if (data === false) {
+        statement = value;
       } else if (data instanceof Array || allowUndefined) {
-        statement = `result${path} = (${value});\n`;
+        statement = `__ot_result${path} = (${value});`;
       } else {
         statement = 
           `if ((${value}) !== undefined) {
-            result${path} = (${value});
-          } else {
-            delete result${path};
-          };\n`;
+            __ot_result${path} = (${value});
+          }`;
       }
       debug('value %s get statement %s', value, statement);
       return [true, statement];
     }
   }
 
-  function replaceObject(data, path = '', innerAlias = getConstAlias()) {
+  function replaceFixed(data, innerAlias, path = '') {
+    if (data.value instanceof Array || isPlainObject(data.value)) {
+      statement += `
+        {
+          const __ot_result = __ot_fixed${path}.value;`;
+      replaceObject(data.value, innerAlias);
+      statement += `
+          __ot_items.splice(${data.index}, 0, __ot_result);
+        }`;
+    } else if ('string' === typeof data.value && match(data.value)) {
+      const [_ok, __statement] = getStatement(data.value, '', false, innerAlias);
+      if (_ok) {
+        statement += `
+          __ot_items.splice(${data.index}, 0, ${__statement});`;
+        // debug('replaceObject %o to statement %s', data, statement);
+      } else {
+        data.value = __statement;
+        statement += `
+          __ot_items.splice(${data.index}, 0, __ot_fixed${path}.value);`;
+        // debug('replaceObject %o to value %o', data, _statement);
+      }
+    } else {
+      statement += `
+        __ot_items.splice(${data.index}, 0, __ot_fixed${path}.value);`;
+    }
+  }
+
+  function replaceObject(data, innerAlias = getConstAlias()) {
+    const isArray = data instanceof Array;
     for (let key in data) {
-      let value = data[key];
-      if (key.search(/\$array.*?/) !== -1 && value['__stub'] && (typeof value['__stub'] === 'string' || value['__stub'] instanceof Array)
-        && value['__value']) {
-        let name = key.substring(6);
-        if (value['__name'] && typeof value['__name'] === 'string') {
-          name = value['__name'];
-        }
-        const stabs = (typeof value['__stub'] === 'string') ? [value['__stub']] : value['__stub'];
-        const __alias = [];
-        let endsm = '';
-        statement += 
-          `delete result${path}['${key}'];
-          {
-            let items = result${path}['${name}'] = [];`;
-        for (let i in stabs) {
-          const stab = stabs[i];
-          const [stabname, itemname, seq] = getItemName(stab);
-          statement += `
-            let src_${i} = ${stabname};
-            for (let ${itemname}_seq in src_${i}) {
-              let ${itemname} = src_${i}[${itemname}_seq];`;
-          __alias.push([`${itemname}.${seq}`, `${itemname}_seq`], [`${itemname}['${seq}']`, `${itemname}_seq`]);
-          endsm += '}';
-        }
-        if (value['__value'] instanceof Array || typeof value['__value'] === 'object') {
-          statement += `
-                let result = this.clone(this.data${path}['${key}']['__value']);\n`
-          replaceObject(value['__value'], '', innerAlias.concat(__alias));
-        } else if ('string' === typeof value['__value']) {
-          if (match(value['__value'])) {
-            const [ok, _statement] = getStatement(value['__value'], '', [], innerAlias.concat(__alias));
-            if (ok) {
-              statement += `let result;
-                ${_statement}`;
-            } else {
-              value['__value'] = _statement;
-              statement += `let result = this.data${path}['${key}']['__value'];\n`;
-            }
-          } else {
-            statement += `let result = this.data${path}['${key}']['__value'];\n`;
+      const value = data[key];
+      let ok, _statement, isExpan, name, nameTag;
+      if (isArray) {
+        isExpan = isExpansion(value);
+        name = key = Number(key);
+        nameTag = name;
+      } else {
+        const matched = match(key);
+        name = reverseEscape(key, matched);
+        if (matched) {
+          [ok, _statement] = getStatement(name, '', false, innerAlias);
+          if (!ok) {
+            name = _statement;
           }
         }
-        statement += 
-              `items.push(result);
-            ${endsm}
-          }\n`
-      } else if (value instanceof Array || isPlainObject(value) || cloneInstances.includes(value.constructor)) {
-        replaceObject(value, `${path}['${key}']`, innerAlias);
-      } else if ('string' === typeof value && match(value)) {
-        const [ok, _statement] = getStatement(value, `${path}['${key}']`, data, innerAlias);
-        if (ok) {
-          statement += _statement;
-          // debug('replaceObject %o to statement %s', data, statement);
-        } else {
-          data[key] = _statement;
-          // debug('replaceObject %o to value %o', data, _statement);
+        isExpan = isExpansion(value);
+        nameTag = `'${name}'`;
+      }
+      if (isExpan) {
+        if (!goodExpansion(value)) {
+          throw 'Expansion error';
         }
+        const stubs = (typeof value['stub'] === 'string') ? [value['stub']] : value['stub'];
+        const __alias = [];
+        let endsm = '';
+        if (value.type === 'array') {
+          statement += `
+            __ot_temp = __ot_result[${nameTag}];
+            delete __ot_result[${nameTag}];
+            {
+              const __ot_data = __ot_temp.value;`;
+          if (value.append) {
+            statement += `
+              const __ot_append = __ot_temp.append;`;
+          }
+          if (value.fixed) {
+            statement += `
+              const __ot_fixed = __ot_temp.fixed;`;
+          }
+          if (ok) {
+            statement += `
+              let __ot_items = __ot_result[${_statement}] = [];`;
+          } else {
+            statement += `
+              let __ot_items = __ot_result[${nameTag}] = [];`;
+          }
+          for (let i in stubs) {
+            const stub = stubs[i];
+            const [stubname, itemname, seq] = getItemName(stub);
+            statement += `
+              let __ot_src_${i} = ${stubname};
+              for (let __ot_${itemname}_seq in __ot_src_${i}) {
+                let ${itemname} = __ot_src_${i}[__ot_${itemname}_seq];`;
+            __alias.push([`${itemname}.${seq}`, `__ot_${itemname}_seq`], [`${itemname}['${seq}']`, `__ot_${itemname}_seq`]);
+            endsm += '}';
+          }
+          if (value['value'] instanceof Array || typeof value['value'] === 'object') {
+            statement += `
+                  const __ot_result = this.clone(__ot_data);`
+            replaceObject(value['value'], innerAlias.concat(__alias));
+          } else if ('string' === typeof value['value']) {
+            if (match(value['value'])) {
+              const [ok, _statement] = getStatement(value['value'], '', [], innerAlias.concat(__alias));
+              if (ok) {
+                statement += `let __ot_result;
+                  ${_statement}`;
+              } else {
+                value['value'] = _statement;
+                statement += `const __ot_result = __ot_data;`;
+              }
+            } else {
+              statement += `const __ot_result = __ot_data`;
+            }
+          }
+          statement += `
+                __ot_items.push(__ot_result);
+              ${endsm}`;
+          if (value.append) {
+            if (value.append instanceof Array) {
+              statement += `
+                {
+                  const __ot_result = __ot_append;`;
+              replaceObject(value.append, innerAlias);
+              statement += `
+                  __ot_items.push(...__ot_result);
+                }`;
+            } else if (isPlainObject(value.append)) {
+              statement += `
+                {
+                  const __ot_result = __ot_append;`;
+              replaceObject(value.append, innerAlias);
+              statement += `
+                  __ot_items.push(__ot_result);
+                }`;
+            } else if ('string' === typeof value.append && match(value.append)) {
+              const [_ok, __statement] = getStatement(value.append, '', false, innerAlias);
+              if (_ok) {
+                statement += `
+                  __ot_items.push(${__statement});`;
+                // debug('replaceObject %o to statement %s', data, statement);
+              } else {
+                value.append = __statement;
+                statement += `
+                  __ot_items.push(__ot_append);`;
+                // debug('replaceObject %o to value %o', data, _statement);
+              }
+            } else {
+              statement += `
+                __ot_items.push(__ot_append);`;
+            }
+          }
+          if (value.fixed) {
+            if (value.fixed instanceof Array) {
+              for (let i in value.fixed) {
+                replaceFixed(value.fixed[i], innerAlias, `[${i}]`);
+              }
+            } else {
+              replaceFixed(value.fixed, innerAlias);
+            }
+          }
+          statement += `
+            }`;
+        } else {
+          if (value.append) {
+            statement += `
+              __ot_temp = __ot_result[${nameTag}];
+              delete __ot_result[${nameTag}];
+              {
+                const __ot_result = {};
+                const __ot_append = __ot_temp.append;`;
+          } else {
+            statement += `
+              delete __ot_result[${nameTag}];
+              {
+                const __ot_result = {};`
+          }
+          for (let i in stubs) {
+            const stub = stubs[i];
+            const [stubname, itemname, key] = getKeyName(stub);
+            statement += `
+              let __ot_src_${i} = ${stubname};
+              for (let __ot_${itemname}_key in __ot_src_${i}) {
+                let ${itemname} = __ot_src_${i}[__ot_${itemname}_key];`;
+            __alias.push([`${itemname}.${key}`, `__ot_${itemname}_key`], [`${itemname}['${key}']`, `__ot_${itemname}_key`]);
+            endsm += '}';
+          }
+          if ('object' !== typeof value['value'] || value['value'] instanceof Array) {
+            throw 'Object expansion must expand to object';
+          }
+          replaceObject(value['value'], innerAlias.concat(__alias));
+          statement += `
+              ${endsm}`;
+          if (value.append) {
+            if ('object' !== typeof value.append || value.append instanceof Array) {
+              throw 'Object expansion must expand to object';
+            }
+            console.log('append =', value.append);
+            statement += `
+              Object.assign(__ot_result, __ot_append);
+              console.log('__ot_append =', __ot_append);`;
+            replaceObject(value.append, innerAlias);
+          }
+          statement += `
+              __ot_temp = __ot_result;
+            }`;
+          if (ok) {
+            statement += `
+            __ot_result[${_statement}] = __ot_temp;`;
+          } else {
+            statement += `
+            __ot_result[${nameTag}] = __ot_temp;`;
+          }
+        }
+      } else if (value instanceof Array || isPlainObject(value) || cloneInstances.includes(value.constructor)) {
+        if (ok) {
+          statement += `
+            __ot_temp = __ot_result[${nameTag}];
+            delete __ot_result[${nameTag}];
+            __ot_result[${_statement}] = __ot_temp;
+            {
+              const __ot_result = __ot_temp;`;
+        } else {
+          statement += `
+            __ot_temp = __ot_result[${nameTag}];
+            {
+              const __ot_result = __ot_temp;`;
+        }
+        replaceObject(value, innerAlias);
+        statement += '}';
+      } else if ('string' === typeof value && match(value)) {
+        if (ok) {
+          const [_ok, __statement] = getStatement(value, '', false, innerAlias);
+          if (_ok) {
+            statement += `
+              delete __ot_result[${nameTag}];
+              __ot_result[${_statement}] = (${__statement});`;
+            // debug('replaceObject %o to statement %s', data, statement);
+          } else {
+            data[key] = __statement;
+            statement += `
+              __ot_temp = __ot_result[${nameTag}];
+              delete __ot_result[${nameTag}];
+              __ot_result[${_statement}] = __ot_temp;`;
+            // debug('replaceObject %o to value %o', data, _statement);
+          }
+        } else {
+          const [_ok, __statement] = getStatement(value, `[${nameTag}]`, data, innerAlias);
+          if (_ok) {
+            statement += __statement;
+            // debug('replaceObject %o to statement %s', data, statement);
+          } else {
+            data[key] = __statement;
+            // debug('replaceObject %o to value %o', data, _statement);
+          }
+        }
+      } else if (ok) {
+        statement += `
+          __ot_temp = __ot_result[${nameTag}];
+          delete __ot_result[${nameTag}];
+          __ot_result[${_statement}] = __ot_temp;`;
+      }
+      if (name !== key) {
+        console.log('come here');
+        data[name] = data[key];
+        delete data[key];
       }
     }
   }
 
   function replaceString(str, innerAlias = getConstAlias()) {
     if (match(str)) {
-      const [ok, _statement] = getStatement(value);
+      const [ok, _statement] = getStatement(value, '', undefined, innerAlias);
       if (ok) {
         statement = _statement;
         // debug('replaceString %s to statement %s', str, _statement);
@@ -199,8 +462,9 @@ function objectTemplates(template, options) {
     }
     template += replaceString(template);
     if ('' !== statement) {
-      statement = `const constants = this.constants;
-        const helpers = this.helpers;\n` + statement;
+      statement = `
+        const __ot_constants = this.constants;
+        const __ot_helpers = this.helpers;${statement}`;
       debug('return function (%s) {%s}', _arguments.join(','), statement);
       return new Function(..._arguments, statement).bind({constants, helpers});
     } else {
@@ -210,13 +474,15 @@ function objectTemplates(template, options) {
   } else {
     replaceObject(template);
     if ('' !== statement) {
-      statement = (cloneInstances.length ? 
-        'let result = this.clone(this.data, this.instanceClone);\n' :
-        'let result = this.clone(this.data);\n')
-        + statement
-        + 'return result;';
-      statement = `const constants = this.constants;
-        const helpers = this.helpers;\n` + statement;
+      statement = `
+        const __ot_constants = this.constants;
+        const __ot_helpers = this.helpers;` 
+        + (cloneInstances.length ? 
+        'const __ot_result = this.clone(this.data, this.instanceClone);\n' :
+        'const __ot_result = this.clone(this.data);\n')
+        + `let __ot_temp;
+        ${statement}
+        return __ot_result;`;
       debug('return function (%s) {%s}', _arguments.join(','), statement);
       return new Function(..._arguments, statement).bind({data: template, clone, instanceClone, constants, helpers});
     } else {
