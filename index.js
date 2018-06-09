@@ -188,8 +188,9 @@ function objectTemplates(template, options) {
         statement = `__ot_result${path} = (${value});`;
       } else {
         statement = 
-          `if ((${value}) !== undefined) {
-            __ot_result${path} = (${value});
+          `__ot_temp = (${value});
+          if (__ot_temp !== undefined) {
+            __ot_result${path} = __ot_temp;
           } else {
             delete __ot_result${path};
           }`;
